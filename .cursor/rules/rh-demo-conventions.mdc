@@ -1,0 +1,71 @@
+---
+description: Red Hat demo baseline conventions - enforces certified components, official tooling, and branding standards
+alwaysApply: true
+---
+
+# Red Hat Demo Conventions
+
+## Container Images
+
+- ALWAYS use Red Hat UBI9 as the base container image (`registry.access.redhat.com/ubi9/ubi`, `ubi9/ubi-minimal`, or `ubi9/ubi-micro`)
+- NEVER use community images (alpine, debian, ubuntu) when a UBI equivalent exists
+- Pull images from `registry.access.redhat.com` or `registry.redhat.io`
+- Use multi-stage builds with UBI9 for final runtime images
+- Name container build files `Containerfile` (not `Dockerfile`) to align with Podman/Buildah conventions
+
+## CLI Tooling
+
+- Use `podman` instead of `docker` for container operations on RHEL
+- Use `oc` CLI for OpenShift operations (not raw `kubectl` unless targeting upstream K8s)
+- Use `ansible-navigator` over `ansible-playbook` for AAP-aligned execution
+- Use `ansible-builder` for building Execution Environments
+- Use `openstack` CLI for RHOSP operations
+
+## OpenShift Resources
+
+- Deploy applications via certified Operators from the Red Hat Operator catalog
+- Use OpenShift Routes (not bare Ingress) for external traffic
+- Use `DeploymentConfig` only for legacy; prefer `Deployment` for new demos
+- Use OpenShift templates or Helm charts from the certified catalog
+
+## Demo Project Structure
+
+Organize demo repos with a consistent layout:
+
+```
+setup/              # Numbered shell scripts (00-prereqs.sh, 01-install.sh, ...)
+  full-setup.sh     # Runs all setup scripts in order
+manifests/          # OpenShift/K8s YAML organized by component
+  operators/        # Operator subscriptions and instances
+  monitoring/       # PrometheusRule, Alertmanager config
+ansible/            # Playbooks, roles, rulebooks, EE definition
+  playbooks/
+  roles/
+  rulebooks/
+  execution-environment/
+demo/               # Runnable demo scenarios
+  scenarios/
+    01-scenario-name/
+      trigger.sh
+      cleanup.sh
+docs/               # Architecture, walkthrough, prerequisites
+```
+
+## Documentation References
+
+- Always cite official Red Hat documentation at `docs.redhat.com` or `access.redhat.com`
+- Reference product version explicitly (e.g., "OpenShift 4.16", "RHEL 9.4", "AAP 2.5")
+- Link to Red Hat Customer Portal knowledge base for troubleshooting
+
+## Naming and Branding
+
+- Use official product names: "Red Hat OpenShift", "Red Hat Enterprise Linux", "Red Hat Ansible Automation Platform"
+- Do not abbreviate to unofficial short forms in user-facing text
+- Use "OpenShift" (not "OKD") when referring to the commercial product
+
+## Security Defaults
+
+- Enable SELinux enforcing mode in RHEL configurations
+- Use TLS for all service-to-service communication
+- Follow principle of least privilege for RBAC definitions
+- Use Red Hat SSO / Keycloak for authentication demos where applicable
