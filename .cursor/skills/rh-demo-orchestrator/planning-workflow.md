@@ -16,9 +16,13 @@ Given the user's requirements, determine which domain experts to involve:
 | Data science, notebooks, Jupyter, training, fine-tuning | `rh-openshift-ai-expert` |
 | RAG, vector database, model registry, MLOps | `rh-openshift-ai-expert` + `rh-middleware-expert` |
 | AI agent, tool use, MCP, LlamaStack, agentic | `rh-openshift-ai-expert` + `rh-ansible-expert` |
+| Lightspeed, product docs RAG, OLS | `rh-openshift-ai-expert` |
+| Gen AI Playground, chat UI, genAiStudio | `rh-openshift-ai-expert` |
 | Self-healing, alert remediation, closed-loop ops | `rh-openshift-expert` + `rh-ansible-expert` + `rh-openshift-ai-expert` |
 | Monitoring, alerting, PrometheusRule, Alertmanager | `rh-openshift-expert` |
-| ServiceNow, ITSM, incident management | `rh-ansible-expert` |
+| NetworkPolicy, cross-namespace, service comms | `rh-openshift-expert` |
+| ServiceNow, ITSM, incident management, impersonation | `rh-ansible-expert` |
+| EDA throttle, workflow branching, run_workflow_template | `rh-ansible-expert` |
 | RHEL, base OS, system config, edge | `rh-rhel-expert` |
 | Container images, UBI, Dockerfile | `rh-rhel-expert` + `rh-certified-components` |
 | OpenStack, VMs on private cloud, NFVi | `rh-openstack-expert` |

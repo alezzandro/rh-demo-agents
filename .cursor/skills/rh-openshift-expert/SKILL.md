@@ -72,9 +72,44 @@ need custom alert rules and webhook integrations:
 - **Alertmanager configuration** -- webhook receivers for forwarding alerts to
   EDA, external systems, or custom endpoints
 - Common alerts for demos: `KubeNodeNotReady`, `ClusterOperatorDegraded`,
-  `etcdMembersDown`, custom application-level alerts
+  `etcdMembersDown`, `MCPDegraded` (MachineConfigPool), `NodeFilesystemSpaceFillingUp`,
+  `NodeFilesystemAlmostOutOfSpace`, `KubeNodePressure` (DiskPressure)
 - Pattern: `PrometheusRule` fires -> Alertmanager routes -> webhook to EDA
   or external system
+- **Alertmanager webhook routing**: configure `route` with `match` on alert names
+  and `receiver` pointing to EDA webhook endpoint; use `group_wait`,
+  `group_interval`, `repeat_interval` for alert batching
+
+### NetworkPolicy for Cross-Namespace Communication
+
+Demos involving multiple namespaces (e.g., AAP in `aap` namespace calling
+LlamaStack in `rhoai-project`) require NetworkPolicy to allow traffic:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-aap-to-llamastack
+  namespace: rhoai-project
+spec:
+  podSelector:
+    matchLabels:
+      app: llamastack
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: aap
+      ports:
+        - port: 8321
+          protocol: TCP
+```
+
+Common cross-namespace patterns in demos:
+- AAP -> LlamaStack (AI inference)
+- AAP -> OpenShift Lightspeed (RAG queries)
+- MCP servers -> LlamaStack (tool registration)
+- Alertmanager -> EDA (webhook alerts)
 
 ## Quick Reference
 
@@ -107,10 +142,15 @@ need custom alert rules and webhook integrations:
 5. **Supply chain security** — Build in **OpenShift Pipelines**, push to
    **Quay** with scanning, deploy with signed or policy-checked images;
    **ACS** for runtime violations and compliance reporting.
-6. **Alert-driven self-healing** — Custom `PrometheusRule` fires alert,
-   Alertmanager webhook forwards to **EDA** (AAP), workflow runs diagnostics,
-   AI analysis, and automated remediation. Combines OCP monitoring + AAP +
-   OpenShift AI.
+6. **Alert-driven self-healing** — Custom `PrometheusRule` fires alert
+   (node failure, operator degraded, disk pressure, MCP degraded),
+   Alertmanager webhook forwards to **EDA** (AAP) with throttle,
+   workflow runs diagnostics (`kubernetes.core`), dual RAG (Lightspeed +
+   LlamaStack KB), AI analysis, playbook generation, and automated
+   remediation. Combines OCP monitoring + AAP + OpenShift AI + Lightspeed.
+7. **Cross-namespace AI integration** — NetworkPolicy allowing AAP to call
+   LlamaStack and Lightspeed across namespaces; ServiceAccount token auth
+   for Lightspeed; ClusterIP Services for internal routing.
 
 ## Best Practices
 

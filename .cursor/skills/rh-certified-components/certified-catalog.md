@@ -124,6 +124,7 @@ Operators from the `redhat-operators` CatalogSource, grouped by category:
 | Operator | Package Name | Default Namespace |
 |----------|-------------|-------------------|
 | OpenShift AI (RHOAI) | `rhods-operator` | `redhat-ods-operator` |
+| OpenShift Lightspeed | `lightspeed-operator` | `openshift-lightspeed` |
 | NVIDIA GPU Operator | `gpu-operator-certified` | `nvidia-gpu-operator` |
 | Node Feature Discovery | `nfd` | `openshift-nfd` |
 | Intel Gaudi Operator | `habana-ai-operator` | `habana-ai-operator` |

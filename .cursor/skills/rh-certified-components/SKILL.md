@@ -83,6 +83,7 @@ Install operators from the Red Hat Operator catalog (`redhat-operators` CatalogS
 | File Integrity Operator | File integrity monitoring |
 | Elasticsearch / Loki | Log aggregation |
 | OpenShift AI (RHOAI) | AI/ML platform, model serving, notebooks |
+| OpenShift Lightspeed | AI assistant with RAG over OCP product documentation |
 | NVIDIA GPU Operator | GPU acceleration for AI workloads |
 | Node Feature Discovery (NFD) | Hardware feature detection for GPU nodes |
 

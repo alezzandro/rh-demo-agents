@@ -130,8 +130,13 @@ and triggers workflow templates with structured extra_vars:
       condition: >-
         event.alert.status == "firing"
         and event.alert.labels.alertname == "KubeNodeNotReady"
+      throttle:
+        once_within: 3 hours
+        group_by_attributes:
+          - event.alert.labels.alertname
+          - event.alert.labels.node
       action:
-        run_job_template:
+        run_workflow_template:
           name: self-healing-workflow
           organization: Default
           job_args:
@@ -140,7 +145,34 @@ and triggers workflow templates with structured extra_vars:
               alert_severity: "{{ event.alert.labels.severity | default('warning') }}"
               alert_node: "{{ event.alert.labels.node | default('') }}"
               alert_description: "{{ event.alert.annotations.description | default('') }}"
+
+    - name: Handle KubeNodePressure (DiskPressure) - remap to filesystem alert
+      condition: >-
+        event.alert.status == "firing"
+        and event.alert.labels.alertname == "KubeNodePressure"
+        and event.alert.labels.condition == "DiskPressure"
+      throttle:
+        once_within: 3 hours
+        group_by_attributes:
+          - event.alert.labels.alertname
+          - event.alert.labels.node
+      action:
+        run_workflow_template:
+          name: self-healing-workflow
+          organization: Default
+          job_args:
+            extra_vars:
+              alert_name: "NodeFilesystemSpaceFillingUp"
+              alert_severity: "{{ event.alert.labels.severity | default('warning') }}"
+              alert_node: "{{ event.alert.labels.node | default('') }}"
+              alert_description: "{{ event.alert.annotations.description | default('Node has active DiskPressure') }}"
 ```
+
+Key EDA patterns shown above:
+- **`throttle`** prevents duplicate workflows for the same incident
+- **`run_workflow_template`** (not `run_job_template`) for multi-step workflows
+- **Alert remapping** -- `KubeNodePressure` DiskPressure is remapped to
+  `NodeFilesystemSpaceFillingUp` to reuse existing remediation logic
 
 On the Alertmanager side, configure a webhook receiver:
 
@@ -242,7 +274,47 @@ options:
 Build: `ansible-builder build -t quay.io/myorg/custom-ee:latest`
 Push: `podman push quay.io/myorg/custom-ee:latest`
 
-## ServiceNow Integration (servicenow.itsm)
+## ServiceNow Integration
+
+### Direct REST API (preferred for demos with impersonation)
+
+Use `ansible.builtin.uri` for full control over ServiceNow REST API, including
+multi-user impersonation:
+
+```yaml
+- name: Impersonate svc-aap-automation user
+  ansible.builtin.uri:
+    url: "{{ snow_instance_url }}/api/now/ui/impersonate/{{ snow_aap_user_sysid }}"
+    method: POST
+    user: "{{ snow_admin_username }}"
+    password: "{{ snow_admin_password }}"
+    force_basic_auth: true
+    headers:
+      Content-Type: application/json
+    status_code: [200, 201]
+  register: impersonate_result
+
+- name: Create incident as svc-aap-automation
+  ansible.builtin.uri:
+    url: "{{ snow_instance_url }}/api/now/table/incident"
+    method: POST
+    headers:
+      Content-Type: application/json
+      Cookie: "{{ impersonate_result.cookies_string }}"
+    body_format: json
+    body:
+      short_description: "{{ alert_name }}: {{ alert_description }}"
+      urgency: "1"
+      impact: "1"
+      category: "Infrastructure"
+    status_code: [200, 201]
+```
+
+Impersonation pattern: admin authenticates first, then impersonates service
+users (`svc-aap-automation` for automation actions, `svc-ai-agent` for AI
+analysis). Each user appears as a distinct actor in the ServiceNow activity log.
+
+### servicenow.itsm Collection (simpler CRUD)
 
 | Module | Purpose |
 |--------|---------|
@@ -253,6 +325,82 @@ Push: `podman push quay.io/myorg/custom-ee:latest`
 
 Common pattern: alert -> gather diagnostics -> create incident with work notes
 -> AI analysis -> update incident with RCA -> remediate -> resolve incident.
+
+## AAP Controller REST API (ansible.builtin.uri)
+
+When playbooks need to manage Controller resources dynamically at runtime
+(e.g., AI creates a new Job Template), use the Controller REST API directly:
+
+```yaml
+- name: Sync AAP project to pick up new playbook
+  ansible.builtin.uri:
+    url: "{{ aap_controller_host }}/api/controller/v2/projects/{{ project_id }}/update/"
+    method: POST
+    user: "{{ aap_controller_username }}"
+    password: "{{ aap_controller_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    status_code: [200, 201, 202]
+
+- name: Create remediation Job Template
+  ansible.builtin.uri:
+    url: "{{ aap_controller_host }}/api/controller/v2/job_templates/"
+    method: POST
+    user: "{{ aap_controller_username }}"
+    password: "{{ aap_controller_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    body_format: json
+    body:
+      name: "Remediate {{ alert_name }}"
+      project: "{{ project_id }}"
+      playbook: "playbooks/{{ playbook_filename }}"
+      inventory: "{{ inventory_id }}"
+      execution_environment: "{{ ee_id }}"
+      ask_variables_on_launch: true
+      extra_vars: "{{ ai_extra_vars | to_nice_yaml }}"
+    status_code: [200, 201]
+```
+
+Use this pattern when:
+- AI-generated playbooks need to be registered as JTs at runtime
+- Projects need to be synced after pushing code to Git
+- Credentials need to be associated with dynamically created JTs
+
+## Workflow Branching via ansible.builtin.fail
+
+Use `ansible.builtin.fail` to intentionally route a workflow to the
+`failure_nodes` path:
+
+```yaml
+- name: Check if remediation already exists
+  ansible.builtin.uri:
+    url: "{{ aap_controller_host }}/api/controller/v2/job_templates/?name={{ expected_jt_name | urlencode }}"
+    method: GET
+    user: "{{ aap_controller_username }}"
+    password: "{{ aap_controller_password }}"
+    force_basic_auth: true
+    validate_certs: false
+  register: jt_lookup
+
+- name: Set stats for downstream steps
+  ansible.builtin.set_stats:
+    data:
+      has_knowledge_base_match: "{{ jt_lookup.json.results | length > 0 }}"
+      knowledge_base_match:
+        job_template_name: "{{ jt_lookup.json.results[0].name | default('') }}"
+        job_template_id: "{{ jt_lookup.json.results[0].id | default('') }}"
+
+- name: Route to known-incident path (fail = failure_nodes in workflow)
+  ansible.builtin.fail:
+    msg: "Known resolution found — routing to auto-remediation path."
+  when: jt_lookup.json.results | length > 0
+```
+
+This is a key pattern for self-healing workflows: the check-knowledge-base
+step fails on purpose when a match is found, causing the workflow to follow
+the `failure_nodes` branch (known-incident auto-remediation) instead of
+the `success_nodes` branch (new-incident AI analysis).
 
 ## ansible-navigator — commands and modes
 

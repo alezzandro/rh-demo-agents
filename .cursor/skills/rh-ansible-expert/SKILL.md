@@ -73,8 +73,13 @@ to scheduled and on-demand Controller jobs.
 Key integration patterns:
 - **Alertmanager webhook** -- EDA listens on a port, Alertmanager `webhook_configs`
   forwards firing alerts; rulebook conditions match `event.alert.labels.alertname`
-- **Action: `run_job_template`** -- trigger a Controller workflow or job template
-  with `extra_vars` extracted from the event payload
+- **Action: `run_workflow_template`** -- trigger a Controller workflow template
+  with `extra_vars` extracted from the event payload (preferred over
+  `run_job_template` for multi-step workflows)
+- **Throttle** -- `once_within: 3 hours` with `group_by_attributes` (e.g.,
+  alertname + node) to prevent duplicate triggers for the same incident
+- **Alert remapping** -- conditions can remap alert names (e.g., `KubeNodePressure`
+  DiskPressure -> `NodeFilesystemSpaceFillingUp`) to reuse existing remediation
 - **Conditional routing** -- multiple rules in one rulebook, each matching a
   different alert name or severity
 
@@ -93,21 +98,31 @@ Key modules: `awx.awx.organization`, `awx.awx.credential`, `awx.awx.project`,
 
 AAP workflow templates chain job templates with conditional branching:
 - **`success_nodes`** -- next step on success
-- **`failure_nodes`** -- next step on failure
+- **`failure_nodes`** -- next step on failure (use for "known incident" routing)
 - **`always_nodes`** -- next step regardless
 - **`set_stats`** -- pass variables between workflow steps (e.g., incident
   number from step 1 to step 2)
+- **Branching via `ansible.builtin.fail`** -- a playbook can intentionally fail
+  to route the workflow to the `failure_nodes` path (e.g., "knowledge base
+  match found" -> fail -> route to known-incident auto-remediation step)
 
 ### Integrations
 
 - **Red Hat OpenShift**: `kubernetes.core` and `redhat.openshift` collections;
   cluster auth (kubeconfig, service accounts), Projects, Operators, and Day-2
   tasks suitable for demo scripts.
-- **ServiceNow**: `servicenow.itsm` collection for incident management,
-  CMDB updates, change requests -- common in enterprise and telco demos.
-- **AI/ML**: invoke LLM APIs via `ansible.builtin.uri` from playbooks;
-  combine with EDA for AI-in-the-loop automation (alert -> diagnostics -> AI
-  analysis -> remediation).
+- **ServiceNow**: use `ansible.builtin.uri` for direct REST API calls
+  (impersonation pattern: admin login + `/api/now/ui/impersonate/{sysid}`
+  to act as different users like `svc-aap-automation` and `svc-ai-agent`).
+  Also available: `servicenow.itsm` collection for simpler CRUD operations.
+- **AI/ML**: invoke LlamaStack `/v1/chat/completions` and OpenShift Lightspeed
+  `/v1/query` via `ansible.builtin.uri`; parse structured AI output with
+  marker-based sections; combine with EDA for closed-loop AI-driven automation.
+- **AAP Controller REST API**: use `ansible.builtin.uri` for programmatic
+  operations (project sync, job template creation, credential association)
+  when playbooks need to manage Controller resources dynamically at runtime.
+- **Gitea/Git servers**: push files via REST API using `ansible.builtin.uri`
+  (e.g., push AI-generated playbooks to a Git repo for AAP project sync).
 - **Cloud providers**: use certified cloud collections where available; dynamic
   inventory from cloud APIs; align secrets with **Ansible Vault** or Controller
   credentials — never hard-code secrets in playbooks.
@@ -133,15 +148,27 @@ AAP workflow templates chain job templates with conditional branching:
   out in the story.
 - **Self-service IT with Controller surveys** — limited choice sets,
   credential separation, workflow steps for approval or notification.
-- **Event-driven remediation** — Alertmanager webhook to EDA, conditional
-  rulebook matches alert name/severity, triggers Controller workflow that
-  gathers diagnostics, opens ITSM ticket, invokes AI analysis, and applies fix.
+- **Event-driven remediation** — Alertmanager webhook to EDA with throttle
+  (`once_within: 3 hours`, `group_by_attributes`), `run_workflow_template`
+  action, rulebook matches alert name/severity, triggers Controller workflow
+  that gathers diagnostics, opens ITSM ticket, invokes AI analysis, and
+  applies fix.
 - **AAP-as-code bootstrap** — single playbook using `awx.awx` to define
   credentials, project (SCM), EE, job templates, and workflow template with
   conditional branching (success/failure nodes).
-- **AI-in-the-loop automation** — EDA triggers workflow; playbooks gather
-  context, call LLM via `ansible.builtin.uri`, and apply AI-generated
-  remediation; store resolution in vector DB for future matching.
+- **Self-healing with dual RAG** — EDA triggers workflow; playbooks gather
+  diagnostics (`kubernetes.core`), query OpenShift Lightspeed (`/v1/query`)
+  for product docs, search LlamaStack vector store for operational KB, call
+  LlamaStack `/v1/chat/completions` with combined context, parse structured
+  output (RCA + playbook + extra_vars via markers), push playbook to Git,
+  create AAP Job Template via Controller REST API, update ServiceNow.
+- **Workflow branching via fail** — `check-knowledge-base.yml` queries AAP
+  for existing remediation JT; if found, `ansible.builtin.fail` routes
+  workflow to `failure_nodes` (known-incident auto-remediation path);
+  if not found, success path invokes AI for new analysis.
+- **ServiceNow impersonation** — admin authenticates, then impersonates
+  service users (`svc-aap-automation`, `svc-ai-agent`) via REST API to
+  show different actors updating the same incident.
 - **Multi-tier app deployment** — roles per tier, rolling updates with
   `serial`, handlers for restarts, smoke tests in `block`/`rescue`.
 

@@ -39,6 +39,8 @@ ecosystem (Routes, storage, GPU Operators, service mesh).
 | TrustyAI | Fairness, explainability, drift detection | `TrustyAIService` |
 | Distributed Workloads | Ray, PyTorch distributed training | `RayCluster`, `RayJob`, `AppWrapper` |
 | LlamaStack | Agentic AI orchestration layer over vLLM | `LlamaStackDistribution` |
+| OpenShift Lightspeed | RAG over OCP product documentation | `OLSConfig` |
+| Gen AI Playground | Interactive chat with models + MCP tools | `OdhDashboardConfig` (genAiStudio) |
 | Hardware Profiles | GPU/accelerator resource templates | `HardwareProfile` (dashboard) |
 
 ## Quick Reference
@@ -47,8 +49,11 @@ ecosystem (Routes, storage, GPU Operators, service mesh).
 |---------|------------|---------------|
 | LLM serving | vLLM on KServe + NVIDIA GPU | "Deploy and query an LLM on OpenShift" |
 | Agentic AI | LlamaStack + vLLM + MCP servers | "AI agent with tool use on OpenShift" |
-| RAG pipeline | LlamaStack vector store or PGVector | "Enterprise RAG chatbot on OCP" |
-| AI-in-the-loop ops | EDA + AAP + LlamaStack + MCP | "Self-healing cluster with AI diagnostics" |
+| RAG (product docs) | OpenShift Lightspeed (FAISS + OCP docs) | "AI assistant with product knowledge" |
+| RAG (operational KB) | LlamaStack vector store (runbooks) | "AI with operational memory" |
+| Dual RAG | Lightspeed + LlamaStack KB together | "Self-healing with product docs + ops KB" |
+| AI-in-the-loop ops | EDA + AAP + LlamaStack (chat completions) | "Self-healing cluster with AI diagnostics" |
+| Gen AI Playground | RHOAI 3.3 chat UI + MCP tools | "Interactive AI assistant in OCP console" |
 | Notebook development | JupyterLab with PyTorch/TensorFlow images | "Data scientist self-service workspace" |
 | ML pipeline | DSP with Kubeflow Pipelines SDK | "Automated model training pipeline" |
 | Model monitoring | TrustyAI + Prometheus + Grafana | "Detect model bias and data drift" |
@@ -99,29 +104,38 @@ Deploy inference models at edge locations for low-latency telco use cases.
 - Pattern: Train centrally, deploy at edge via GitOps/ACM policies
 - Use cases: Network anomaly detection, RAN optimization, predictive maintenance
 
-### 6. Agentic AI with LlamaStack + MCP
+### 6. Self-Healing Cluster with AI (Dual RAG)
+
+Closed-loop automation: alert -> diagnostics -> dual RAG -> AI analysis -> remediation.
+
+- Products: OpenShift (monitoring, Lightspeed), AAP (EDA + workflows),
+  OpenShift AI (LlamaStack + vLLM)
+- RAG sources: (1) OpenShift Lightspeed for product documentation, (2) LlamaStack
+  vector store for operational runbooks and past resolutions
+- Flow: Prometheus alert -> Alertmanager webhook -> EDA -> AAP workflow ->
+  gather diagnostics (`kubernetes.core`) -> query Lightspeed (`/v1/query`) ->
+  search operational KB (`/v1/vector_stores/{id}/search`) -> call LlamaStack
+  `/v1/chat/completions` with combined context -> parse RCA + playbook ->
+  push to Git -> create AAP Job Template -> update ServiceNow
+- Architecture: **AI proposes, Ansible executes** -- all integrations via
+  `ansible.builtin.uri`; MCP servers deployed separately for Gen AI Playground
+- Knowledge base branching: check if remediation JT already exists in AAP;
+  if yes, route to auto-remediation (known-incident path via workflow
+  failure_nodes); if no, invoke AI for new analysis
+
+### 7. Agentic AI with LlamaStack + MCP (Interactive)
 
 Deploy an AI agent that uses tools (MCP servers) to interact with external
-systems -- execute Ansible job templates, update ServiceNow incidents, push
-code to Git repos.
+systems interactively -- for demos where the model drives tool calls.
 
-- Products: OpenShift AI (vLLM + LlamaStack), AAP (MCP server), external ITSM
+- Products: OpenShift AI (vLLM + LlamaStack), Gen AI Playground
 - Key resources: `LlamaStackDistribution`, `InferenceService`, MCP Deployments
 - LlamaStack provides: Responses API (agentic), vector store (RAG/memory),
   tool registration (MCP servers), embeddings
-- Pattern: Playbook calls LlamaStack Responses API with system prompt + tools;
+- Best with larger models (70B+); smaller models (24B) may struggle with
+  reliable multi-tool orchestration
+- Pattern: Gen AI Playground or Responses API with tool definitions;
   LlamaStack routes inference to vLLM and tool calls to MCP servers
-
-### 7. Self-Healing Cluster with AI
-
-Closed-loop automation: alert -> diagnostics -> AI analysis -> remediation.
-
-- Products: OpenShift (monitoring), AAP (EDA + workflows), OpenShift AI (LlamaStack + vLLM)
-- Flow: Prometheus alert -> Alertmanager webhook -> EDA -> AAP workflow ->
-  gather diagnostics -> query vector KB -> invoke AI (new or known path) ->
-  generate/run remediation playbook -> store resolution in vector store
-- MCP servers: AAP (manage job templates), ServiceNow (update incidents),
-  Git (push remediation playbooks)
 
 ## GPU and Accelerator Support
 
@@ -208,18 +222,71 @@ spec:
           nvidia.com/gpu: "1"
 ```
 
-## LlamaStack (Agentic AI Layer)
+## OpenShift Lightspeed (Product Documentation RAG)
+
+OpenShift Lightspeed is the AI assistant built into the OCP console. It ships
+with a FAISS vector index over the full OCP documentation corpus (18,000+
+embedded chunks). For demos, it serves as a **product documentation RAG layer**:
+
+- **`/v1/query` API** -- send an alert description, get remediation guidance
+  with referenced documentation (titles + URLs)
+- **SA token auth** -- create a ServiceAccount with `ols-user` ClusterRoleBinding,
+  mount its token secret, use as Bearer token
+- **Returns**: response text + `referenced_documents` array (doc_title, doc_url)
+- **Separation of concerns**: Lightspeed provides product knowledge;
+  `gather-cluster-diagnostics.yml` provides live cluster state deterministically
+
+### When to Use Lightspeed vs LlamaStack Vector Store
+
+| Source | Content | Use Case |
+|--------|---------|----------|
+| OpenShift Lightspeed | OCP product docs (18,000+ chunks) | "What does the documentation say about this alert?" |
+| LlamaStack vector store | Operational runbooks, past resolutions | "Have we seen this before? What worked?" |
+| Both (dual RAG) | Combined context in one prompt | Self-healing: product knowledge + operational memory |
+
+## LlamaStack (AI Orchestration Layer)
 
 LlamaStack provides an orchestration layer on top of vLLM for building AI agents:
 
-- **Responses API** -- agentic endpoint: send a system prompt + user message +
-  tool definitions; LlamaStack routes inference to vLLM and tool calls to
-  registered MCP servers
+- **Chat Completions API** (`/v1/chat/completions`) -- standard OpenAI-compatible
+  endpoint; preferred for production workflows called from Ansible playbooks
+- **Responses API** (`/v1/responses`) -- agentic endpoint with tool definitions;
+  use for interactive/demo scenarios where the model drives tool calls
+- **Vector Store Search** (`/v1/vector_stores/{id}/search`) -- search documents
+  in a named vector store; returns scored results with filenames and content
 - **Vector I/O** -- built-in vector store (PostgreSQL + pgvector or FAISS) for
   RAG and memory; insert/query embeddings without external vector DB
-- **Tool registration** -- register MCP servers by label; LlamaStack discovers
-  and invokes them during agent turns
+- **MCP Tool registration** -- register MCP servers for the Responses API and
+  Gen AI Playground; not used in production Ansible workflows
 - **Embeddings** -- sentence-transformers for embedding generation (local, no GPU needed)
+
+### AI Proposes, Ansible Executes
+
+For production-grade demos, prefer this architectural pattern:
+
+- **AI handles analysis** -- the model receives diagnostics + RAG context and
+  produces a Root Cause Analysis + remediation playbook via `/v1/chat/completions`
+- **Ansible handles orchestration** -- AAP workflow playbooks drive every
+  integration (ServiceNow, Gitea, AAP Controller) using `ansible.builtin.uri`
+  REST API calls; each step is deterministic, observable, and auditable
+
+This hybrid approach shows that AI augments the automation platform rather
+than replacing it. The AI proposes; Ansible executes. MCP servers remain
+deployed for interactive Gen AI Playground demos but the production workflow
+uses deterministic Ansible playbooks.
+
+### Structured AI Output Parsing
+
+When calling `/v1/chat/completions` from Ansible, use marker-based output:
+
+```
+SECTION 1: Root Cause Analysis (plain text)
+---PLAYBOOK--- (YAML remediation playbook)
+---EXTRA_VARS--- (JSON with incident-specific variables)
+```
+
+Parse in Ansible with `split('---PLAYBOOK---')` and handle missing markers
+gracefully with fallback logic.
 
 ### LlamaStackDistribution CR
 
@@ -274,6 +341,18 @@ Incident: {{ snow_incident_number }}
 Execute all steps using the available tools.
 ```
 
+## Gen AI Playground (RHOAI 3.3)
+
+Interactive chat UI in the OpenShift AI dashboard for testing models with
+MCP tool calling. Enable with:
+
+1. `genAiStudio: true` in `OdhDashboardConfig`
+2. `opendatahub.io/genai-asset: "true"` label on the InferenceService
+3. `gen-ai-aa-mcp-servers` ConfigMap listing MCP server endpoints
+
+Useful for demonstrating that the same model powering the automated workflow
+is also accessible as an interactive assistant with tool-calling capabilities.
+
 ## Best Practices
 
 - Use KServe single-model serving for LLMs (not ModelMesh)
@@ -283,18 +362,20 @@ Execute all steps using the available tools.
 - Enable autoscaling on `InferenceService` for variable load demos
 - Use TrustyAI from Day 1 -- monitoring should be part of the demo, not an afterthought
 - Pin notebook image tags; do not use `latest` in demos
-- For RAG demos, use PGVector (PostgreSQL extension) as the vector store for simplicity
-- For agentic AI demos, use LlamaStack over raw vLLM API -- it handles tool
-  calling, conversation state, and vector store integration
+- Prefer "AI proposes, Ansible executes" for production-grade demos; use MCP
+  tool calling only for interactive/playground demos or with large models (70B+)
+- For RAG, combine Lightspeed (product docs) with LlamaStack vector store
+  (operational KB) as dual sources in the same prompt
 - Build MCP servers on UBI9 Python images; deploy as standard OCP workloads
+- Use NetworkPolicy to allow cross-namespace traffic (e.g., AAP -> LlamaStack)
 - Reference `rh-certified-components` for all base images and operators
 
 ## Integration with Other Domains
 
 | Domain | Integration Point |
 |--------|-------------------|
-| OpenShift | GPU Operator, Routes, ODF storage, Service Mesh for serving |
-| Ansible | Automate RHOAI deployment, notebook provisioning, pipeline triggers |
+| OpenShift | GPU Operator, Routes, ODF storage, Service Mesh, Lightspeed, NetworkPolicy |
+| Ansible | `ansible.builtin.uri` to LlamaStack/Lightspeed APIs, EDA triggers, AAP workflows |
 | Middleware | Application layer for RAG (Quarkus/Camel), AMQ Streams for event-driven inference |
 | Telco | Edge inference with ACM, network anomaly detection models |
 | RHEL | Custom notebook images built on UBI9, GPU driver host config |
@@ -303,6 +384,8 @@ Execute all steps using the available tools.
 
 - [OpenShift AI 3 Documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3/)
 - [OpenShift AI on cloud services](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_cloud_service/)
+- [Gen AI Playground (RHOAI 3.3)](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.3/html-single/experimenting_with_models_in_the_gen_ai_playground/)
+- [OpenShift Lightspeed](https://docs.redhat.com/en/documentation/red_hat_openshift_lightspeed/)
 - [KServe Documentation](https://kserve.github.io/website/)
 - [Kubeflow Pipelines SDK](https://www.kubeflow.org/docs/components/pipelines/)
 - [NVIDIA GPU Operator on OCP](https://docs.nvidia.com/datacenter/cloud-native/openshift/latest/index.html)

@@ -628,19 +628,62 @@ spec:
 
 ### LlamaStack API Endpoints
 
-| Endpoint | Purpose |
-|----------|---------|
-| `POST /v1/responses` | Agentic completion with tool use |
-| `POST /v1/inference/chat_completion` | Direct chat completion |
-| `POST /v1/vector-io/insert` | Insert documents into vector bank |
-| `POST /v1/vector-io/query` | Query vector bank for similar documents |
-| `GET /v1/models` | List available models |
-| `GET /v1/health` | Health check |
+| Endpoint | Purpose | Use Case |
+|----------|---------|----------|
+| `POST /v1/chat/completions` | OpenAI-compatible chat completion | Production Ansible workflows |
+| `POST /v1/responses` | Agentic completion with tool use | Interactive/Playground demos |
+| `POST /v1/vector_stores/{id}/search` | Search a named vector store | Operational KB lookup |
+| `POST /v1/vector-io/insert` | Insert documents into vector bank | Store resolutions |
+| `POST /v1/vector-io/query` | Query vector bank for similar documents | Legacy vector query |
+| `GET /v1/models` | List available models | Health/discovery |
+| `GET /v1/health` | Health check | Monitoring |
 
-### Calling LlamaStack from Ansible
+### Calling LlamaStack Chat Completions from Ansible (Production Pattern)
 
 ```yaml
-- name: Invoke AI analysis via LlamaStack Responses API
+- name: Call LlamaStack Chat Completions API
+  ansible.builtin.uri:
+    url: "{{ llamastack_url }}/v1/chat/completions"
+    method: POST
+    body_format: json
+    body:
+      model: "{{ llamastack_model }}"
+      messages:
+        - role: system
+          content: "{{ system_prompt_content.content | b64decode }}"
+        - role: user
+          content: >-
+            {{ kb_context }}
+
+            {{ rag_context }}
+
+            Analyze this alert and respond with ALL THREE sections.
+            SECTION 1: Write a 3-5 sentence Root Cause Analysis (plain text).
+            ---PLAYBOOK--- (complete Ansible remediation playbook)
+            ---EXTRA_VARS--- (JSON with incident-specific variables)
+            Alert: {{ alert_name }}.
+            Description: {{ alert_description }}.
+      max_tokens: 4096
+      temperature: 0.2
+    timeout: 300
+    status_code: [200]
+  register: ai_response
+
+- name: Extract AI response text
+  ansible.builtin.set_fact:
+    ai_full_text: "{{ ai_response.json.choices[0].message.content | default('') }}"
+
+- name: Parse RCA and playbook from response
+  ansible.builtin.set_fact:
+    ai_rca: "{{ (ai_full_text.split('---PLAYBOOK---')[0]) | trim }}"
+    ai_playbook_raw: "{{ (ai_full_text.split('---PLAYBOOK---')[1]) | trim }}"
+  when: "'---PLAYBOOK---' in ai_full_text"
+```
+
+### Calling LlamaStack Responses API (Interactive/Playground Pattern)
+
+```yaml
+- name: Invoke AI agent via LlamaStack Responses API
   ansible.builtin.uri:
     url: "{{ llamastack_url }}/v1/responses"
     method: POST
@@ -660,7 +703,42 @@ spec:
   register: ai_response
 ```
 
-### Vector Store Operations
+### Vector Store Search (Operational Knowledge Base)
+
+Search for relevant runbooks and past resolutions:
+
+```yaml
+- name: Read KB vector store ID from ConfigMap
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: ops-knowledge-base-config
+    namespace: rhoai-project
+  register: kb_configmap_lookup
+
+- name: Search operational knowledge base
+  ansible.builtin.uri:
+    url: "{{ llamastack_url }}/v1/vector_stores/{{ kb_vector_store_id }}/search"
+    method: POST
+    body_format: json
+    body:
+      query: "{{ alert_name }} {{ alert_description }} remediation runbook"
+      max_num_results: 5
+    timeout: 30
+    status_code: [200]
+  register: kb_search_result
+
+- name: Build KB context from results
+  ansible.builtin.set_fact:
+    kb_context: >-
+      OPERATIONAL KNOWLEDGE BASE ({{ kb_search_result.json.data | length }} documents):
+      {% for doc in kb_search_result.json.data %}
+      --- {{ doc.filename }} (relevance: {{ '%.2f' | format(doc.score | float) }}) ---
+      {% for chunk in doc.content %}{{ chunk.text }}{% endfor %}
+      {% endfor %}
+```
+
+### Legacy Vector I/O Operations
 
 Insert a resolution into the knowledge base:
 
@@ -677,22 +755,6 @@ Insert a resolution into the knowledge base:
           metadata:
             alert_name: "{{ alert_name }}"
             incident_number: "{{ snow_incident_number }}"
-```
-
-Query for similar past incidents:
-
-```yaml
-- name: Check knowledge base for similar incidents
-  ansible.builtin.uri:
-    url: "{{ llamastack_url }}/v1/vector-io/query"
-    method: POST
-    body_format: json
-    body:
-      bank_id: "incident-resolutions"
-      query: "{{ alert_name }}: {{ alert_description }}"
-      params:
-        max_chunks: 3
-  register: kb_response
 ```
 
 ## MCP Servers on OpenShift
@@ -785,12 +847,138 @@ spec:
       effect: NoSchedule
 ```
 
+## OpenShift Lightspeed (Product Documentation RAG)
+
+### OLSConfig CR
+
+```yaml
+apiVersion: ols.openshift.io/v1alpha1
+kind: OLSConfig
+metadata:
+  name: cluster
+spec:
+  ols:
+    defaultModel: my-model
+    defaultProvider: my-provider
+    introspectionEnabled: false
+    logLevel: INFO
+    conversationCache:
+      type: postgres
+    queryFilters:
+      - name: regex_filter
+        pattern: '(?i)^how do I hack'
+        replaceWith: "<query redacted>"
+  llm:
+    providers:
+      - name: my-provider
+        type: openai
+        url: "https://my-model-predictor.rhoai-project.svc:8000/v1"
+        models:
+          - name: my-model
+```
+
+### Querying Lightspeed from Ansible
+
+```yaml
+- name: Read OLS SA token from cluster secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: ols-access-token
+    namespace: openshift-lightspeed
+  register: ols_secret_lookup
+
+- name: Extract OLS bearer token
+  ansible.builtin.set_fact:
+    ols_bearer_token: "{{ ols_secret_lookup.resources[0].data.token | b64decode }}"
+
+- name: Query OpenShift Lightspeed for remediation guidance
+  ansible.builtin.uri:
+    url: "https://lightspeed-app-server.openshift-lightspeed.svc:8443/v1/query"
+    method: POST
+    body_format: json
+    body:
+      query: >-
+        OpenShift alert {{ alert_name }} has fired.
+        Description: {{ alert_description }}.
+        What are the recommended remediation steps?
+    headers:
+      Authorization: "Bearer {{ ols_bearer_token }}"
+    validate_certs: false
+    timeout: 120
+    status_code: [200]
+  register: ols_result
+
+- name: Build RAG context from Lightspeed response
+  ansible.builtin.set_fact:
+    rag_context: >-
+      REFERENCE DOCUMENTATION ({{ ols_result.json.referenced_documents | length }} sources):
+      {{ ols_result.json.response }}
+      {% for doc in ols_result.json.referenced_documents %}
+      - {{ doc.doc_title }}: {{ doc.doc_url }}
+      {% endfor %}
+```
+
+Lightspeed returns:
+- `response` -- AI-generated guidance based on product documentation
+- `referenced_documents` -- array of `{doc_title, doc_url}` linking to docs.openshift.com
+
+### Lightspeed Cluster Interaction (Optional)
+
+Setting `introspectionEnabled: true` deploys an MCP server alongside
+Lightspeed that performs live read-only queries against the OpenShift API.
+This requires a larger model (70B+) for reliable tool selection. For demos
+with smaller models, keep it disabled and collect cluster state deterministically
+via `gather-cluster-diagnostics.yml`.
+
+## Gen AI Playground (RHOAI 3.3)
+
+### Enabling the Playground
+
+```yaml
+# 1. Enable Gen AI Studio in OdhDashboardConfig
+apiVersion: opendatahub.io/v1alpha
+kind: OdhDashboardConfig
+metadata:
+  name: odh-dashboard-config
+  namespace: redhat-ods-applications
+spec:
+  dashboardConfig:
+    genAiStudio: true
+
+# 2. Label InferenceService as an AI asset
+# oc label inferenceservice/my-model \
+#   opendatahub.io/genai-asset="true" -n rhoai-project
+
+# 3. Register MCP servers via ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gen-ai-aa-mcp-servers
+  namespace: redhat-ods-applications
+data:
+  ServiceNow-MCP-Server: |
+    {
+      "url": "http://servicenow-mcp.self-healing-agent.svc:8080/sse",
+      "headers": {},
+      "name": "ServiceNow MCP Server"
+    }
+  Git-MCP-Server: |
+    {
+      "url": "http://git-mcp.self-healing-agent.svc:8080/sse",
+      "headers": {},
+      "name": "Git MCP Server"
+    }
+```
+
 ## Documentation
 
 - [RHOAI 3 Product Documentation](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3/)
 - [RHOAI Release Notes](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3/html/release_notes/)
+- [Gen AI Playground (RHOAI 3.3)](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.3/html-single/experimenting_with_models_in_the_gen_ai_playground/)
 - [Serving LLMs on RHOAI](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3/html/serving_models/)
 - [Data Science Pipelines](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3/html/working_with_data_science_pipelines/)
 - [Distributed Workloads](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3/html/working_with_distributed_workloads/)
 - [TrustyAI](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3/html/monitoring_data_science_models/)
+- [OpenShift Lightspeed](https://docs.redhat.com/en/documentation/red_hat_openshift_lightspeed/)
 - [LlamaStack Documentation](https://llama-stack.readthedocs.io/)

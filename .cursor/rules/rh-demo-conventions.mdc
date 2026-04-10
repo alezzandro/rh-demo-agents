@@ -35,6 +35,10 @@ Organize demo repos with a consistent layout:
 ```
 setup/              # Numbered shell scripts (00-prereqs.sh, 01-install.sh, ...)
   full-setup.sh     # Runs all setup scripts in order
+  health-check.sh   # Verify all components after cluster restart
+  reset-demo.sh     # Reset to clean state between demo runs
+  show-credentials.sh # Display URLs and credentials for all services
+  uninstall-demo.sh # Full teardown of demo components
 manifests/          # OpenShift/K8s YAML organized by component
   operators/        # Operator subscriptions and instances
   monitoring/       # PrometheusRule, Alertmanager config
@@ -42,14 +46,35 @@ ansible/            # Playbooks, roles, rulebooks, EE definition
   playbooks/
   roles/
   rulebooks/
+  templates/        # Jinja2 templates (system prompts, configs)
   execution-environment/
+  private/          # Credentials & license files (git-ignored)
 demo/               # Runnable demo scenarios
   scenarios/
     01-scenario-name/
+      README.md     # Presenter script with talking points
       trigger.sh
       cleanup.sh
+  cleanup-all.sh    # Reset all scenarios at once
 docs/               # Architecture, walkthrough, prerequisites
+knowledge-base/     # RAG documents (runbooks, references) if applicable
+mcp-servers/        # MCP server Containerfiles if applicable
 ```
+
+### Standard Operational Scripts
+
+Every demo repo should include these scripts in `setup/`:
+
+- **`health-check.sh`** -- validate all components are operational after cluster
+  restart; check operators, API endpoints, services, credentials; exit 0 on
+  success for scriptability
+- **`reset-demo.sh`** -- clean up artifacts from previous runs without
+  uninstalling platform components (clear jobs, incidents, generated playbooks,
+  uncordon nodes, re-apply monitoring config)
+- **`show-credentials.sh`** -- display URLs and login credentials for all
+  services in the demo
+- **`full-setup.sh`** -- run all numbered setup scripts in order with error
+  checking; each setup script should be idempotent (safe to re-run)
 
 ## Documentation References
 
@@ -69,3 +94,7 @@ docs/               # Architecture, walkthrough, prerequisites
 - Use TLS for all service-to-service communication
 - Follow principle of least privilege for RBAC definitions
 - Use Red Hat SSO / Keycloak for authentication demos where applicable
+- NEVER hard-code secrets in manifests or playbooks; generate dynamically in
+  setup scripts and store in git-ignored files (e.g., `setup/.generated-credentials.env`)
+- Use NetworkPolicy for cross-namespace service communication
+- Use ServiceAccount tokens (not long-lived passwords) for inter-service auth
