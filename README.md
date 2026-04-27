@@ -146,6 +146,10 @@ rh-demo-agents/
         certified-catalog.md
 ```
 
+## Documentation
+
+- [Getting Started with Cursor IDE](docs/getting-started-with-cursor.md) -- Installation, Git setup, AI modes, model switching, and skills installation for SAs who are new to Cursor
+
 ## Contributing
 
 ### Adding a New Skill
